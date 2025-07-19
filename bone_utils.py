@@ -3,10 +3,9 @@ from mathutils import Vector
 from mathutils import Matrix
 from mathutils import Quaternion
 from math import pi
-from .version_compatibility import matmul
 
 
-def is_pose_bone_all_locked(pose_bone): # -> bool:
+def is_pose_bone_all_locked(pose_bone) -> bool:
     """Return True if all pose_bone's transform channels are locked"""
     if not all(pose_bone.lock_location):
         return False
@@ -14,7 +13,7 @@ def is_pose_bone_all_locked(pose_bone): # -> bool:
         return False
     if not all(pose_bone.lock_rotation):
         return False
-
+    
     return True
 
 
@@ -68,7 +67,7 @@ def vec_roll_to_mat3_normalized(nor, roll):
     rMatrix = quat.to_matrix()
 
     # Combine and output result */
-    return matmul(rMatrix, bMatrix)
+    return rMatrix @ bMatrix
 
 
 def ebone_roll_to_vector(bone, align_axis, axis_only=False):
@@ -121,25 +120,24 @@ def copy_bone_constraints(bone_a, bone_b):
                 continue
 
 
-def copy_bone_to_arm(src_ob, trg_ob, src_bone_name, trg_bone_name="", suffix='CP'):
-    """Create a new bone (or align existing) in trg_ob with the same head/tail as bone with the given name"""
+def copy_bone_to_arm(src_ob, trg_ob, bone_name, suffix='CP'):
+    """Create a new bone in trg_ob with the same head/tail as bone with the given name"""
     try:
-        src_bone = src_ob.data.bones[src_bone_name]
+        src_bone = src_ob.data.bones[bone_name]
     except KeyError:
         return
 
-    trg_bone_name = src_bone_name if not trg_bone_name else trg_bone_name
-    trg_bone_name = '_'.join((trg_bone_name, suffix)) if suffix else trg_bone_name
-
+    new_name = '_'.join((bone_name, suffix)) if suffix else bone_name
+    
     try:
-        trg_bone = trg_ob.data.edit_bones[trg_bone_name]
+        new_bone = trg_ob.data.edit_bones[new_name]
     except KeyError:
-        trg_bone = trg_ob.data.edit_bones.new(trg_bone_name)
+        new_bone = trg_ob.data.edit_bones.new(new_name)
 
-    trg_bone.head = src_bone.head_local
-    trg_bone.tail = src_bone.tail_local
+    new_bone.head = src_bone.head_local
+    new_bone.tail = src_bone.tail_local
 
-    return trg_bone.name
+    return new_bone.name
 
 
 def copy_bone(ob, bone_name, assign_name='', constraints=False, deform_bone='SAME'):
@@ -238,7 +236,7 @@ def remove_all_bone_constraints(ob):
         remove_bone_constraints(pbone)
 
 
-def get_constrained_controls(armature_object, unselect=False, use_deform=False): # -> List[bpy.types.PoseBone]
+def get_constrained_controls(armature_object: bpy.types.Object, unselect=False, use_deform=False) -> list[bpy.types.PoseBone]:
     for pb in armature_object.pose.bones:
         if pb.bone.use_deform and not use_deform:  # FIXME: ik controls might have use_deform just to be exported for games
             if unselect:
@@ -249,7 +247,7 @@ def get_constrained_controls(armature_object, unselect=False, use_deform=False):
             if unselect:
                 pb.bone.select = False
             continue
-
+    
         yield pb
 
 
@@ -460,9 +458,14 @@ def copytransform_to_copylocrot(ob):
         for constr in pbone.constraints:
             if constr.type == 'COPY_TRANSFORM':
                 to_remove.append(constr)
-                for cp_constr in (pbone.constraints.new('COPY_ROTATION'), pbone.constraints.new('COPY_LOCATION')):
-                    cp_constr.target = constr.ob
-                    cp_constr.subtarget = constr.subtarget
+                # Store the target and subtarget before removing the original constraint
+                new_target = constr.target
+                new_subtarget = constr.subtarget
+                for cp_constr in (pbone.constraints.new('COPY_ROTATION'), 
+                                 pbone.constraints.new('COPY_LOCATION'),
+                                 pbone.constraints.new('COPY_SCALE')):
+                    cp_constr.target = new_target
+                    cp_constr.subtarget = new_subtarget
             elif constr.type == 'STRETCH_TO':
                 constr.mute = True
 
@@ -666,7 +669,7 @@ def align_to_closer_axis(src_bone, trg_bone):
 def closest_bone_axis(bone, mat, direction):
     """Return bone axis which is closest to direction"""
     xyz = bone.x_axis, bone.y_axis, bone.z_axis
-    xyz = [matmul(mat, x).normalized() for x in xyz]
+    xyz = [(mat @ x).normalized() for x in xyz]
 
     dot_prods = [abs(direction.dot(x)) for x in xyz]
 
@@ -677,7 +680,7 @@ def relative_direction(start_bone, end_bone, mat):
     direction = end_bone.matrix_local.translation.copy()
     direction -= start_bone.matrix_local.translation
 
-    direction = matmul(mat, direction)
+    direction = mat @ direction
     return direction.normalized()
 
 
@@ -685,36 +688,5 @@ def relative_pose_direction(start_pose_bone, end_pose_bone, mat):
     direction = end_pose_bone.matrix.translation.copy()
     direction -= start_pose_bone.matrix.translation
 
-    direction = matmul(mat, direction)
+    direction = mat @ direction
     return direction.normalized()
-
-def lrl_strip(bone): # bone: str, Bone, PoseBone, EditBone
-    """Returns Left/Right agnostic name of the bone. Lower case."""
-    if not bone:
-        return ""
-    name = (bone if type(bone) is str else bone.name).lower()
-    for _ in ("right", "left", "rgt", "lft", "r", "l"):
-        _new = name.replace(_, "")
-        name = _new or name
-    return name
-
-def get_rest_z_axes(obj, context):
-    """returns {pbone.name : z_axis} for obj's rest pose"""
-    axes = {}
-    old_mode = obj.data.pose_position
-    if old_mode != 'REST':
-        obj.data.pose_position = 'REST'
-        if bpy.app.version < (2, 80):
-            context.scene.update()
-        else:
-            context.view_layer.update()
-    for pb in obj.pose.bones:
-        axes[pb.name] = pb.z_axis
-    if old_mode != 'REST':
-        obj.data.pose_position = old_mode
-        if bpy.app.version < (2, 80):
-            context.scene.update()
-        else:
-            context.view_layer.update()
-    return axes
-

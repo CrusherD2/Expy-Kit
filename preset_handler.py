@@ -4,6 +4,7 @@ import os
 import shutil
 
 import bpy
+from bpy.props import StringProperty
 from .rig_mapping.bone_mapping import HumanFingers, HumanSpine, HumanLeg, HumanArm, HumanSkeleton, SimpleFace
 
 
@@ -32,12 +33,10 @@ def iterate_presets_with_current(scene, context):
     yield '--', "--", "None"  # first menu entry, doesn't do anything
     yield "--Current--", "-- Current Settings --", "Use Bones set in Expy Retarget Panel"
 
-    _dir = get_retarget_dir()
-    if os.path.isdir(_dir):
-        for f in os.listdir(_dir):
-            if not f.endswith('.py'):
-                continue
-            yield f, os.path.splitext(f)[0].title(), ""
+    for f in os.listdir(get_retarget_dir()):
+        if not f.endswith('.py'):
+            continue
+        yield f, os.path.splitext(f)[0].title(), ""
 
 
 def iterate_presets(scene, context):
@@ -45,35 +44,16 @@ def iterate_presets(scene, context):
 
     yield '--', "--", "None"  # first menu entry, doesn't do anything
 
-    _dir = get_retarget_dir()
-    if os.path.isdir(_dir):
-        for f in os.listdir(_dir):
-            if not f.endswith('.py'):
-                continue
-            yield f, os.path.splitext(f)[0].title(), ""
+    for f in os.listdir(get_retarget_dir()):
+        if not f.endswith('.py'):
+            continue
+        yield f, os.path.splitext(f)[0].title(), ""
 
 
 def get_settings_skel(settings):
     mapping = HumanSkeleton(preset=settings)
     return mapping
 
-# absent bones substitutions (left to right)
-# for fingers it would be 'fingers.thumb' : ((xL,), (xR,),)
-bone_name_synonyms = {
-    'face.left_eye' : (('eye_master.L', 'master_eye.L'),
-                       ('DEF-eye.L', 'eye.L'),
-                    ),
-
-    'face.right_eye' : (('eye_master.R', 'master_eye.R'),
-                        ('DEF-eye.R', 'eye.R'),
-                    ),
-
-    'right_leg.toe' : (('toe.R', 'toe_fk.R'),),
-    'left_leg.toe' : (('toe.L', 'toe_fk.L'),),
-
-    'right_leg_ik.toe' : (('toe.R', 'toe_ik.R'),),
-    'left_leg_ik.toe' : (('toe.L', 'toe_ik.L'),),
-    }
 
 def validate_preset(armature_data, separator=':'):
     settings = armature_data.expykit_retarget
@@ -84,45 +64,37 @@ def validate_preset(armature_data, separator=':'):
         prefix = a_name.rsplit(separator, 1)[0]
         prefix += separator
 
-    def find_possible(name, group, attr):
-        """returns existing bone name looking with prefix, and within synonyms, or empty string"""
-        if not name:
-            return name
-
-        if name in armature_data.bones:
-            return name
-
-        else:
-            if prefix and prefix + name in armature_data.bones:
-                return prefix + name
-
-            synonyms = bone_name_synonyms.get("%s.%s" % (group, attr))
-            if synonyms:
-                for syn_grp in synonyms:
-                    if name in syn_grp:
-                        for syn in syn_grp:
-                            if syn != name:
-                                if syn in armature_data.bones:
-                                    return syn
-
-                                if prefix and prefix + syn in armature_data.bones:
-                                    return prefix + syn
-
-        return ""
-
     for group in ('spine', 'left_arm', 'left_arm_ik', 'right_arm', 'right_arm_ik',
                     'right_leg', 'right_leg_ik', 'left_leg', 'left_leg_ik', 'face'):
 
         trg_setting = getattr(settings, group)
         for k, v in trg_setting.items():
-            if k == "name" or type(v) is not str or not v:
-                continue
             try:
-                v1 = find_possible(v, group, k)
-                if v1 != v:
-                    setattr(trg_setting, k, v1)
+                if v not in armature_data.bones:
+                    with_prefix = prefix + v
+                    setattr(trg_setting, k, with_prefix if with_prefix in armature_data.bones else "")
             except TypeError:
                 continue
+                
+    # Handle legacy single custom bone
+    if settings.custom.name and settings.custom.name not in armature_data.bones:
+        with_prefix = prefix + settings.custom.name
+        settings.custom.name = with_prefix if with_prefix in armature_data.bones else ""
+        
+    # Handle dynamic custom bone properties
+    if hasattr(settings.custom, 'get_bones'):
+        for identifier, bone_name in settings.custom.get_bones():
+            if bone_name and bone_name not in armature_data.bones:
+                with_prefix = prefix + bone_name
+                if with_prefix in armature_data.bones:
+                    setattr(settings.custom, identifier, with_prefix)
+                else:
+                    setattr(settings.custom, identifier, "")
+
+    # Handle root bone
+    if settings.root and settings.root not in armature_data.bones:
+        with_prefix = prefix + settings.root
+        settings.root = with_prefix if with_prefix in armature_data.bones else ""
 
     finger_bones = 'meta', 'a', 'b', 'c'
     for trg_grp in settings.left_fingers, settings.right_fingers:
@@ -133,13 +105,11 @@ def validate_preset(armature_data, separator=':'):
             for slot in finger_bones:
                 bone_name = trg_finger.get(slot)
                 if bone_name and bone_name not in armature_data.bones:
-                    bone_name1 = find_possible(bone_name, trg_grp.name, k)
-                    if bone_name1 != bone_name:
-                        trg_finger[slot] = bone_name1
+                    with_prefix = prefix + bone_name
+                    trg_finger[slot] = with_prefix if with_prefix in armature_data.bones else ""
 
 
 def set_preset_skel(preset, validate=True):
-    """reads given preset into the active armature's settings"""
     if not preset:
         return
     if not preset.endswith(".py"):
@@ -149,29 +119,17 @@ def set_preset_skel(preset, validate=True):
     if not os.path.isfile(preset_path):
         return
 
-    settings = bpy.context.active_object.data.expykit_retarget
+    spec = importlib.util.spec_from_file_location("sel_preset", preset_path)
+    preset_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(preset_mod)
+    
+    if validate:
+        validate_preset(bpy.context.active_object.data)
 
-    if hasattr(importlib.util, "module_from_spec"):
-        spec = importlib.util.spec_from_file_location("sel_preset", preset_path)
-        preset_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(preset_mod)
-
-        if validate:
-            validate_preset(settings.id_data)
-
-        mapping = get_settings_skel(preset_mod.skeleton)
-    else:
-        # python <3.5. using a crutch
-        mapping = get_preset_skel(preset, settings=settings, validate=False)
-
-        if validate:
-            validate_preset(settings.id_data)
-
+    mapping = get_settings_skel(preset_mod.skeleton)
     return mapping
 
-
-def get_preset_skel(preset, settings=None, validate=True):
-    """reads given preset into the given settings"""
+def get_preset_skel(preset, settings=None):
     if not preset:
         return
     if not preset.endswith(".py"):
@@ -183,80 +141,36 @@ def get_preset_skel(preset, settings=None, validate=True):
 
     # run preset on current settings if there are any, otherwise create Preset settings
     # the attributes of 'skeleton' are set in the preset
-    _new_skeleton = settings is None
     skeleton = settings if settings else PresetSkeleton()
 
     # HACKISH: executing the preset would apply it to the current armature (target).
     # We don't want that if this is runnning on the source armature. Using ast instead
     code = ast.parse(open(preset_path).read())
 
-    # remove skeleton
+    # remove skeleton 
     code.body.pop(0)  # remove line 'import bpy' from preset
     code.body.pop(0)  # remove line 'skeleton = bpy.context.object.data.expykit_retarget' from preset
     eval(compile(code, '', 'exec'))
 
-    if settings and validate:
+    if settings:
         validate_preset(settings.id_data)
 
     mapping = HumanSkeleton(preset=skeleton)
-    if _new_skeleton:
-        del skeleton
-
+    del skeleton
+    
     return mapping
 
 
-def reset_skeleton(skeleton):
-    """Reset skeleton values to their defaults"""
-    for setting in (skeleton.right_arm, skeleton.left_arm, skeleton.spine, skeleton.right_leg,
-                    skeleton.left_leg, skeleton.right_arm_ik, skeleton.left_arm_ik,
-                    skeleton.right_leg_ik, skeleton.left_leg_ik,
-                    skeleton.face,
-                    ):
-        for k in setting.keys():
-            if k == 'name':
-                continue
-            try:
-                setattr(setting, k, '')
-            except TypeError:
-                continue
+def reset_preset_names(settings):
+    "Reset preset names used by scripts"
+    settings.right_arm.name = 'arm'
+    settings.left_arm.name = 'arm'
 
-    for settings in (skeleton.right_fingers, skeleton.left_fingers):
-        for setting in [getattr(settings, k) for k in settings.keys()]:
-            try:
-                for k in setting.keys():
-                    if k == 'name':
-                        continue
-                    setattr(setting, k, '')
-            except AttributeError:
-                continue
+    settings.right_leg.name = 'leg'
+    settings.left_leg.name = 'leg'
 
-    skeleton.root = ''
-    skeleton.deform_preset = '--'
-
-
-def iterate_filled_props(value, prefix="skeleton"):
-    """yields only filled non-default skeleton's properties with their paths (path, value)"""
-    if isinstance(value, bpy.types.PropertyGroup):
-        if hasattr(value, "_order"):
-            _items = ((k, value.bl_rna.properties[k]) for k in value._order)
-        else:
-            _items = value.bl_rna.properties.items()
-        for sub_value_attr, sub_prop in _items:
-            if (sub_value_attr in ("rna_type", "name") or sub_prop.is_hidden):
-                continue
-            sub_value = getattr(value, sub_value_attr)
-            if hasattr(sub_prop, "default") and sub_prop.default == sub_value:
-                continue
-            yield from iterate_filled_props(sub_value, prefix="%s.%s" % (prefix, sub_value_attr))
-    else:
-        # convert thin wrapped sequences
-        # to simple lists to repr()
-        try:
-            value = value[:]
-        except BaseException:
-            pass
-
-        yield (prefix, value)
+    settings.right_fingers.name = 'fingers'
+    settings.left_fingers.name = 'fingers'
 
 
 class PresetFinger:
@@ -265,6 +179,49 @@ class PresetFinger:
         self.b = ""
         self.c = ""
         self.meta = ""
+
+
+class PresetCustom:
+    def __init__(self):
+        self.name = ""
+        # We don't need to define custom properties here since 
+        # they will be added dynamically in the copy method
+    
+    def __setattr__(self, key, value):
+        self.__dict__[key] = value
+    
+    def __getattr__(self, key):
+        # Return empty string for non-existent attributes
+        if key not in self.__dict__:
+            return ""
+        return self.__dict__[key]
+    
+    def add_bone(self, identifier, bone_name):
+        """Add a custom bone property with the given identifier"""
+        if hasattr(self, identifier):
+            # Property already exists, update it
+            setattr(self, identifier, bone_name)
+        else:
+            # Create a new property
+            prop = StringProperty(name=identifier, default=bone_name)
+            setattr(self.__class__, identifier, prop)
+            setattr(self, identifier, bone_name)
+        return True
+    
+    def get_bones(self):
+        """Get all custom bone properties as (identifier, bone_name) pairs"""
+        result = []
+        for prop_name in dir(self):
+            if prop_name.startswith('__') or prop_name in ('name', 'add_bone', 'get_bones', 'has_settings'):
+                continue
+            value = getattr(self, prop_name)
+            if isinstance(value, str) and value:
+                result.append((prop_name, value))
+        return result
+    
+    def has_settings(self):
+        """Check if any custom bones are defined"""
+        return bool(self.get_bones()) or bool(self.name)
 
 
 class PresetSkeleton:
@@ -284,16 +241,27 @@ class PresetSkeleton:
 
         self.left_fingers = HumanFingers(thumb=PresetFinger(), index=PresetFinger(), middle=PresetFinger(), ring=PresetFinger(), pinky=PresetFinger())
         self.right_fingers = HumanFingers(thumb=PresetFinger(), index=PresetFinger(), middle=PresetFinger(), ring=PresetFinger(), pinky=PresetFinger())
+        self.custom = PresetCustom()
         self.root = ""
 
     def copy(self, settings):
-        """self <- settings"""
         for group in ('spine', 'left_arm', 'left_arm_ik', 'right_arm', 'right_arm_ik',
                       'right_leg', 'right_leg_ik', 'left_leg', 'left_leg_ik', 'face'):
             setting = getattr(self, group)
             trg_setting = getattr(settings, group)
             for k in setting.keys():
                 setattr(setting, k, getattr(trg_setting, k))
+
+        # Copy custom bones - we need to handle dynamic properties
+        self.custom.name = settings.custom.name
+        
+        # Copy all custom bone properties
+        if hasattr(settings.custom, 'get_bones'):
+            for identifier, bone_name in settings.custom.get_bones():
+                setattr(self.custom, identifier, bone_name)
+
+        # Copy root bone
+        self.root = settings.root
 
         finger_bones = 'a', 'b', 'c', 'meta'
         for group, trg_grp in zip((self.left_fingers, self.right_fingers),

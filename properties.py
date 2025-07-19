@@ -4,160 +4,169 @@ from bpy.props import StringProperty
 from bpy.props import PointerProperty
 from bpy.props import BoolProperty
 from bpy.props import EnumProperty
+from bpy.props import CollectionProperty
 
 from . import preset_handler
-from .version_compatibility import make_annotations
 
 
-class RetargetBase():
+class RetargetBase(PropertyGroup):
     def has_settings(self):
-        if hasattr(self, "_order"):
-            _items = ((k, self.bl_rna.properties[k]) for k in self._order)
-        else:
-            _items = self.bl_rna.properties.items()
-        for sub_value_attr, sub_prop in _items:
-            if (sub_value_attr in ("rna_type", "name") or sub_prop.is_hidden):
+        for k, v in self.items():
+            if k == 'name':
                 continue
-            v = getattr(self, sub_value_attr)
             if v:
-                if hasattr(sub_prop, "default") and sub_prop.default == v:
-                    continue
-                if hasattr(v, "has_settings"):
-                    if not v.has_settings():
-                        continue
                 return True
         return False
 
 
-@make_annotations
-class RetargetSpine(RetargetBase, PropertyGroup):
-    _order = ("head", "neck", "spine2", "spine1", "spine", "hips")
-
-    head = StringProperty(name="head")
-    neck = StringProperty(name="neck")
-    spine2 = StringProperty(name="spine2")
-    spine1 = StringProperty(name="spine1")
-    spine = StringProperty(name="spine")
-    hips = StringProperty(name="hips")
+class RetargetSpine(RetargetBase):
+    head: StringProperty(name="head")
+    neck: StringProperty(name="neck")
+    spine2: StringProperty(name="spine2")
+    spine1: StringProperty(name="spine1")
+    spine: StringProperty(name="spine")
+    hips: StringProperty(name="hips")
 
 
-@make_annotations
-class RetargetArm(RetargetBase, PropertyGroup):
-    _order = ("shoulder", "arm", "arm_twist", "arm_twist_02", "forearm", "forearm_twist",
-              "forearm_twist_02", "hand")
+class RetargetArm(RetargetBase):
+    shoulder: StringProperty(name="shoulder")
+    arm: StringProperty(name="arm")
+    arm_twist: StringProperty(name="arm_twist")
+    arm_twist_02: StringProperty(name="arm_twist_02")
+    forearm: StringProperty(name="forearm")
+    forearm_twist: StringProperty(name="forearm_twist")
+    forearm_twist_02: StringProperty(name="forearm_twist_02")
+    hand: StringProperty(name="hand")
 
-    shoulder = StringProperty(name="shoulder")
-    arm = StringProperty(name="arm")
-    arm_twist = StringProperty(name="arm_twist")
-    arm_twist_02 = StringProperty(name="arm_twist_02")
-    forearm = StringProperty(name="forearm")
-    forearm_twist = StringProperty(name="forearm_twist")
-    forearm_twist_02 = StringProperty(name="forearm_twist_02")
-    hand = StringProperty(name="hand")
-
-    name = StringProperty(default='arm', options={'HIDDEN'},
-                          get=lambda s:"arm", set=lambda a,b:None)
+    name: StringProperty(default='arm')
 
 
-@make_annotations
-class RetargetLeg(RetargetBase, PropertyGroup):
-    _order = ("upleg", "upleg_twist", "upleg_twist_02", "leg", "leg_twist", "leg_twist_02",
-              "foot", "toe")
+class RetargetLeg(RetargetBase):
+    upleg: StringProperty(name="upleg")
+    upleg_twist: StringProperty(name="upleg_twist")
+    upleg_twist_02: StringProperty(name="upleg_twist_02")
+    leg: StringProperty(name="leg")
+    leg_twist: StringProperty(name="leg_twist")
+    leg_twist_02: StringProperty(name="leg_twist_02")
+    foot: StringProperty(name="foot")
+    toe: StringProperty(name="toe")
 
-    upleg = StringProperty(name="upleg")
-    upleg_twist = StringProperty(name="upleg_twist")
-    upleg_twist_02 = StringProperty(name="upleg_twist_02")
-    leg = StringProperty(name="leg")
-    leg_twist = StringProperty(name="leg_twist")
-    leg_twist_02 = StringProperty(name="leg_twist_02")
-    foot = StringProperty(name="foot")
-    toe = StringProperty(name="toe")
-
-    name = StringProperty(default='leg', options={'HIDDEN'},
-                          get=lambda s:"leg", set=lambda a,b:None)
+    name: StringProperty(default='leg')
 
 
-@make_annotations
-class RetargetFinger(RetargetBase, PropertyGroup):
-    _order = ("meta", "a", "b", "c")
-
-    meta = StringProperty(name="meta")
-    a = StringProperty(name="A")
-    b = StringProperty(name="B")
-    c = StringProperty(name="C")
+class RetargetFinger(RetargetBase):
+    meta: StringProperty(name="meta")
+    a: StringProperty(name="A")
+    b: StringProperty(name="B")
+    c: StringProperty(name="C")
 
 
-@make_annotations
-class RetargetFingers(RetargetBase, PropertyGroup):
-    _order = ("thumb", "index", "middle", "ring", "pinky")
-
-    thumb = PointerProperty(type=RetargetFinger)
-    index = PointerProperty(type=RetargetFinger)
-    middle = PointerProperty(type=RetargetFinger)
-    ring = PointerProperty(type=RetargetFinger)
-    pinky = PointerProperty(type=RetargetFinger)
-
-    name = StringProperty(default='fingers', options={'HIDDEN'},
-                          get=lambda s:"fingers", set=lambda a,b:None)
+class RetargetCustomBone(RetargetBase):
+    name: StringProperty(default='')
+    
+    def has_settings(self):
+        return bool(self.name)
 
 
-@make_annotations
-class RetargetFaceSimple(RetargetBase, PropertyGroup):
-    _order = ("jaw", "right_eye", "left_eye", "right_upLid", "left_upLid", "super_copy")
+class RetargetCustom(RetargetBase):
+    name: StringProperty(default='')
+    
+    def add_bone(self, identifier, bone_name):
+        """Add a custom bone property with the given identifier"""
+        if hasattr(self, identifier):
+            # Property already exists, update it
+            setattr(self, identifier, bone_name)
+        else:
+            # Create a new property
+            prop = StringProperty(name=identifier, default=bone_name)
+            setattr(self.__class__, identifier, prop)
+            setattr(self, identifier, bone_name)
+        return True
+            
+    def remove_bone(self, identifier):
+        """Remove a custom bone property with the given identifier"""
+        if hasattr(self, identifier):
+            # Can't actually remove the property, but we can clear its value
+            setattr(self, identifier, "")
+            return True
+        return False
+    
+    def get_bones(self):
+        """Get all custom bone properties as (identifier, bone_name) pairs"""
+        result = []
+        for prop_name in dir(self):
+            if prop_name.startswith('__') or prop_name in ('name', 'add_bone', 'remove_bone', 'get_bones', 'has_settings'):
+                continue
+            value = getattr(self, prop_name)
+            if isinstance(value, str) and value:
+                result.append((prop_name, value))
+        return result
+    
+    def has_settings(self):
+        """Check if any custom bones are defined"""
+        return bool(self.get_bones()) or bool(self.name)
 
-    jaw = StringProperty(name="jaw")
-    left_eye = StringProperty(name="left_eye")
-    right_eye = StringProperty(name="right_eye")
 
-    left_upLid = StringProperty(name="left_upLid")
-    right_upLid = StringProperty(name="right_upLid")
+class RetargetFingers(PropertyGroup):
+    thumb: PointerProperty(type=RetargetFinger)
+    index: PointerProperty(type=RetargetFinger)
+    middle: PointerProperty(type=RetargetFinger)
+    ring: PointerProperty(type=RetargetFinger)
+    pinky: PointerProperty(type=RetargetFinger)
 
-    super_copy = BoolProperty(default=True)
+    name: StringProperty(default='fingers')
+
+    def has_settings(self):
+        for setting in (self.thumb, self.index, self.middle, self.ring, self.pinky):
+            if setting.has_settings():
+                return True
+
+        return False
 
 
-@make_annotations
-class RetargetSettings(RetargetBase, PropertyGroup):
-    _order = ("face", "spine",
-              "right_arm", "left_arm",
-              "right_leg", "left_leg",
-              "right_fingers", "left_fingers",
-              "right_arm_ik", "left_arm_ik",
-              "right_leg_ik", "left_leg_ik",
-              "root", "deform_preset")
+class RetargetFaceSimple(PropertyGroup):
+    jaw: StringProperty(name="jaw")
+    left_eye: StringProperty(name="left_eye")
+    right_eye: StringProperty(name="right_eye")
 
-    face = PointerProperty(type=RetargetFaceSimple)
-    spine = PointerProperty(type=RetargetSpine)
+    left_upLid: StringProperty(name="left_upLid")
+    right_upLid: StringProperty(name="right_upLid")
 
-    left_arm = PointerProperty(type=RetargetArm)
-    left_arm_ik = PointerProperty(type=RetargetArm)
-    left_fingers = PointerProperty(type=RetargetFingers)
+    super_copy: BoolProperty(default=True)
 
-    right_arm = PointerProperty(type=RetargetArm)
-    right_arm_ik = PointerProperty(type=RetargetArm)
-    right_fingers = PointerProperty(type=RetargetFingers)
 
-    left_leg = PointerProperty(type=RetargetLeg)
-    left_leg_ik = PointerProperty(type=RetargetLeg)
-    right_leg = PointerProperty(type=RetargetLeg)
-    right_leg_ik = PointerProperty(type=RetargetLeg)
+class RetargetSettings(PropertyGroup):
+    face: PointerProperty(type=RetargetFaceSimple)
+    spine: PointerProperty(type=RetargetSpine)
 
-    root = StringProperty(name="root")
+    left_arm: PointerProperty(type=RetargetArm)
+    left_arm_ik: PointerProperty(type=RetargetArm)
+    left_fingers: PointerProperty(type=RetargetFingers)
 
-    deform_preset = StringProperty(name="Deformation Bones", subtype='FILE_NAME', default="--")
+    right_arm: PointerProperty(type=RetargetArm)
+    right_arm_ik: PointerProperty(type=RetargetArm)
+    right_fingers: PointerProperty(type=RetargetFingers)
 
-    last_used_preset = StringProperty(
-        name="Last used preset", description="Preset from which the settings were loaded from (or saved to).",
-        options={'SKIP_SAVE','HIDDEN'}) # base name, not a full path
+    left_leg: PointerProperty(type=RetargetLeg)
+    left_leg_ik: PointerProperty(type=RetargetLeg)
+    right_leg: PointerProperty(type=RetargetLeg)
+    right_leg_ik: PointerProperty(type=RetargetLeg)
 
-    #TODO: if face, root, etc is *really* excluded from has_settings just uncomment this override here
-    # def has_settings(self):
-    #     for setting in (self.spine, self.left_arm, self.left_arm_ik, self.left_fingers,
-    #                     self.right_arm, self.right_arm_ik, self.right_fingers,
-    #                     self.left_leg, self.left_leg_ik, self.right_leg, self.right_leg_ik):
-    #         if setting.has_settings():
-    #             return True
-    #
-    #     return False
+    custom: PointerProperty(type=RetargetCustom)
+
+    root: StringProperty(name="root")
+
+    def has_settings(self):
+        for setting in (self.spine, self.left_arm, self.left_arm_ik, self.left_fingers,
+                        self.right_arm, self.right_arm_ik, self.right_fingers,
+                        self.left_leg, self.left_leg_ik, self.right_leg, self.right_leg_ik,
+                        self.custom):
+            if setting.has_settings():
+                return True
+
+        return False
+
+    deform_preset: EnumProperty(items=preset_handler.iterate_presets, name="Deformation Bones")
 
 
 def register_classes():
@@ -167,6 +176,8 @@ def register_classes():
     bpy.utils.register_class(RetargetFinger)
     bpy.utils.register_class(RetargetFingers)
     bpy.utils.register_class(RetargetFaceSimple)
+    bpy.utils.register_class(RetargetCustomBone)
+    bpy.utils.register_class(RetargetCustom)
 
     bpy.utils.register_class(RetargetSettings)
     bpy.types.Armature.expykit_retarget = PointerProperty(type=RetargetSettings)
@@ -183,6 +194,8 @@ def unregister_classes():
     bpy.utils.unregister_class(RetargetFingers)
     bpy.utils.unregister_class(RetargetFinger)
     bpy.utils.unregister_class(RetargetSpine)
+    bpy.utils.unregister_class(RetargetCustomBone)
+    bpy.utils.unregister_class(RetargetCustom)
 
     bpy.utils.unregister_class(RetargetArm)
     bpy.utils.unregister_class(RetargetLeg)
