@@ -1438,9 +1438,9 @@ class ConstrainToArmature(bpy.types.Operator):
                                      description="Constrain Root bone to Hip motion",
                                      default="")
 
-    root_cp_loc_x: BoolProperty(name="Root Copy Loc X", description="Copy Root X Location", default=False)
+    root_cp_loc_x: BoolProperty(name="Root Copy Loc X", description="Copy Root X Location", default=True)
     root_cp_loc_y: BoolProperty(name="Root Copy Loc y", description="Copy Root Y Location", default=True)
-    root_cp_loc_z: BoolProperty(name="Root Copy Loc Z", description="Copy Root Z Location", default=False)
+    root_cp_loc_z: BoolProperty(name="Root Copy Loc Z", description="Copy Root Z Location", default=True)
 
     root_use_loc_min_x: BoolProperty(name="Use Root Min X", description="Minimum Root X", default=False)
     root_use_loc_min_y: BoolProperty(name="Use Root Min Y", description="Minimum Root Y", default=False)
@@ -1458,8 +1458,8 @@ class ConstrainToArmature(bpy.types.Operator):
     root_loc_max_y: FloatProperty(name="Root Max Y", description="Maximum Root Y", default=0.0)
     root_loc_max_z: FloatProperty(name="Root Max Z", description="Maximum Root Z", default=0.0)
 
-    root_cp_rot_x: BoolProperty(name="Root Copy Rot X", description="Copy Root X Rotation", default=False)
-    root_cp_rot_y: BoolProperty(name="Root Copy Rot y", description="Copy Root Y Rotation", default=False)
+    root_cp_rot_x: BoolProperty(name="Root Copy Rot X", description="Copy Root X Rotation", default=True)
+    root_cp_rot_y: BoolProperty(name="Root Copy Rot y", description="Copy Root Y Rotation", default=True)
     root_cp_rot_z: BoolProperty(name="Root Copy Rot Z", description="Copy Root Z Rotation", default=False)
 
     no_finger_loc: BoolProperty(default=False, name="No Finger Location")
@@ -1792,9 +1792,23 @@ class ConstrainToArmature(bpy.types.Operator):
             else:
                 clean_action_name = action_name
             
-            # Look for corresponding target SAP action
-            target_sap_action_name = f"{clean_target_name} {clean_action_name} SAP Data"
-            target_sap_action = bpy.data.actions.get(target_sap_action_name)
+            # Look for corresponding target SAP action.
+            # Try both the clean target name and the full object name (which may include suffix like .001)
+            target_prefix_candidates = []
+            try:
+                target_prefix_candidates.append(target_armature.name)
+            except Exception:
+                pass
+            target_prefix_candidates.append(clean_target_name)
+
+            target_sap_action = None
+            chosen_name = None
+            for prefix in target_prefix_candidates:
+                candidate_name = f"{prefix} {clean_action_name} SAP Data"
+                target_sap_action = bpy.data.actions.get(candidate_name)
+                if target_sap_action:
+                    chosen_name = candidate_name
+                    break
             
             if target_sap_action:
                 # Ensure target has armature data animation data
@@ -1803,7 +1817,7 @@ class ConstrainToArmature(bpy.types.Operator):
                 
                 # Set the target's SAP action
                 target_armature.data.animation_data.action = target_sap_action
-                print(f"  Initial sync: Set target SAP action to '{target_sap_action_name}'")
+                print(f"  Initial sync: Set target SAP action to '{chosen_name}'")
         
         # Start the sync handler if not already running
         if not self._is_sap_sync_handler_active():
@@ -2241,6 +2255,7 @@ def clean_baked_action(original_action, baked_action, target_armature):
     """
     Clean up the baked action by removing animation data for bones that weren't 
     animated in the original action. This prevents pose contamination from other animations.
+    Bones with "_RET" suffix are preserved to maintain pose between animations.
     """
     if not original_action or not baked_action:
         return
@@ -2255,20 +2270,23 @@ def clean_baked_action(original_action, baked_action, target_armature):
                 original_animated_bones.add(bone_name)
     
     # Remove animation data for bones that weren't animated in the original
+    # EXCEPT for bones with "_RET" suffix which should preserve their pose
     bones_to_clean = set()
     for fc in baked_action.fcurves:
         if fc.data_path.startswith('pose.bones['):
             bone_name = fc.data_path.split('"')[1] if '"' in fc.data_path else None
             if bone_name and bone_name not in original_animated_bones:
-                bones_to_clean.add(bone_name)
+                # Skip bones with "_RET" suffix - they should keep their pose
+                if not bone_name.endswith("_RET"):
+                    bones_to_clean.add(bone_name)
     
-    # Remove F-curves for bones that weren't originally animated
+    # Remove F-curves for bones that weren't originally animated (excluding _RET bones)
     for bone_name in bones_to_clean:
         for fc in list(baked_action.fcurves):
             if fc.data_path.startswith(f'pose.bones["{bone_name}"]'):
                 baked_action.fcurves.remove(fc)
     
-    print(f"Cleaned baked action: removed animation data for {len(bones_to_clean)} bones that weren't animated in original")
+    print(f"Cleaned baked action: removed animation data for {len(bones_to_clean)} bones that weren't animated in original (preserved _RET bones)")
 
 
 class BakeConstrainedActions(bpy.types.Operator):
@@ -2346,6 +2364,21 @@ class BakeConstrainedActions(bpy.types.Operator):
             return {'FINISHED'}
 
         sel_obs = list(context.selected_objects)
+        
+        # Calculate total actions to bake for progress tracking
+        total_actions = 0
+        for ob in sel_obs:
+            trg_ob = self.get_trg_ob(ob)
+            if trg_ob:
+                for action in bpy.data.actions:
+                    if validate_actions(action, trg_ob.path_resolve) and "SAP Data" not in action.name:
+                        total_actions += 1
+        
+        current_action = 0
+        
+        # Set initial cursor to indicate processing
+        context.window.cursor_modal_set('WAIT')
+        
         for ob in sel_obs:
             ob.select_set(False)
 
@@ -2363,6 +2396,28 @@ class BakeConstrainedActions(bpy.types.Operator):
             for action in list(bpy.data.actions):  # convert to list beforehand to avoid picking new actions
                 if not validate_actions(action, trg_ob.path_resolve):
                     continue
+                
+                # Skip actions with "SAP Data" in the name
+                if "SAP Data" in action.name:
+                    continue
+
+                # Update progress
+                current_action += 1
+                progress = current_action / total_actions if total_actions > 0 else 0
+                
+                # Update cursor to show progress (using different cursor types as progress indicators)
+                if progress < 0.25:
+                    context.window.cursor_modal_set('WAIT')
+                elif progress < 0.5:
+                    context.window.cursor_modal_set('CROSSHAIR')
+                elif progress < 0.75:
+                    context.window.cursor_modal_set('MOVE_X')
+                else:
+                    context.window.cursor_modal_set('MOVE_Y')
+                
+                # Force UI update
+                context.window_manager.progress_update(progress)
+                bpy.context.view_layer.update()
 
                 trg_ob.animation_data.action = action
                 fr_start, fr_end = action.frame_range
@@ -2409,9 +2464,53 @@ class BakeConstrainedActions(bpy.types.Operator):
                     # Sync vis/material tracks from source to target
                     if hasattr(trg_ob.data, 'sub_anim_properties') and hasattr(ob.data, 'sub_anim_properties'):
                         sync_vis_and_mat_tracks(trg_ob.data, ob.data)
+                    
+                    # Find and rename SAP Data animations
+                    # Use the full armature names (including suffix like .001)
+                    target_armature_name = ob.name
+                    source_armature_name = trg_ob.name
+                    
+                    # Look for all SAP Data animations that start with the source armature name
+                    for sap_action in bpy.data.actions:
+                        if "SAP Data" not in sap_action.name:
+                            continue
+                        # Only rename actions that start with the exact source prefix followed by a space.
+                        # This avoids re-renaming actions that already start with 'source.+', e.g. 'smush... .001 ...'
+                        source_prefix_with_space = f"{source_armature_name} "
+                        if not sap_action.name.startswith(source_prefix_with_space):
+                            continue
+
+                        # Extract the part after the source prefix and single space
+                        suffix = sap_action.name[len(source_prefix_with_space):]
+
+                        # New name with full target armature name
+                        new_sap_data_name = f"{target_armature_name} {suffix}"
+
+                        old_name = sap_action.name
+                        sap_action.name = new_sap_data_name
+                        print(f"  Renamed SAP Data action from '{old_name}' to '{new_sap_data_name}'")
+
+                    # Normalize any previously malformed names like
+                    # 'target .001 .001 ... <Action> SAP Data' into 'target <Action> SAP Data'
+                    try:
+                        dup_pattern = re.compile(rf"^{re.escape(target_armature_name)}(?:\s+\.\d+)+\s+(?P<rest>.+)$")
+                    except Exception:
+                        dup_pattern = None
+                    if dup_pattern is not None:
+                        for sap_action in bpy.data.actions:
+                            if "SAP Data" not in sap_action.name:
+                                continue
+                            match = dup_pattern.match(sap_action.name)
+                            if not match:
+                                continue
+                            cleaned = f"{target_armature_name} {match.group('rest')}"
+                            old_name = sap_action.name
+                            sap_action.name = cleaned
+                            print(f"  Normalized SAP Data action from '{old_name}' to '{cleaned}'")
+                    
+                    # Link the renamed SAP Data action to the target armature data
                     if hasattr(ob.data, 'animation_data'):
-                        clean_target_name = ob.name.split(".")[0] if "." in ob.name else ob.name
-                        sap_data_action_name = f"{clean_target_name} {clean_action_name} SAP Data"
+                        sap_data_action_name = f"{target_armature_name} {clean_action_name} SAP Data"
                         sap_data_action = bpy.data.actions.get(sap_data_action_name)
                         if sap_data_action:
                             if not ob.data.animation_data:
@@ -2431,6 +2530,9 @@ class BakeConstrainedActions(bpy.types.Operator):
                 for constr in reversed(pbone.constraints):
                     pbone.constraints.remove(constr)
 
+        # Reset cursor to default
+        context.window.cursor_modal_restore()
+        
         return {'FINISHED'}
 
 
@@ -3101,7 +3203,10 @@ def sync_vis_and_mat_tracks(source_data, target_data):
             if not found:
                 new_track = trg_vis.add()
                 new_track.name = src_track.name
-                new_track.value = src_track.value
+                # Only copy value if the attribute exists
+                if hasattr(src_track, 'value') and hasattr(new_track, 'value'):
+                    new_track.value = src_track.value
+    
     # Sync material tracks
     if hasattr(source_data, 'sub_anim_properties') and hasattr(target_data, 'sub_anim_properties'):
         src_mat = getattr(source_data.sub_anim_properties, 'mat_tracks', None)
@@ -3116,5 +3221,12 @@ def sync_vis_and_mat_tracks(source_data, target_data):
                 if not found:
                     new_track = trg_mat.add()
                     new_track.name = src_track.name
-                    new_track.value = src_track.value
+                    # Only copy value if the attribute exists
+                    if hasattr(src_track, 'value') and hasattr(new_track, 'value'):
+                        new_track.value = src_track.value
+                    # For material tracks, we might need to copy other attributes
+                    # Check for common material track attributes
+                    for attr in ['material', 'slot', 'enabled']:
+                        if hasattr(src_track, attr) and hasattr(new_track, attr):
+                            setattr(new_track, attr, getattr(src_track, attr))
 # --- End utility ---

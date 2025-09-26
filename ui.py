@@ -420,7 +420,7 @@ class ClearArmatureRetarget(Operator):
 class SetToActiveBone(Operator):
     """Set adjacent UI entry to active bone"""
     bl_idname = "object.expy_kit_set_to_active_bone"
-    bl_label = "Set Expy Kit value to active bone"
+    bl_label = "Set to Active Bone"
 
     attr_name: StringProperty(default="", options={'SKIP_SAVE'})
     sub_attr_name: StringProperty(default="", options={'SKIP_SAVE'})
@@ -431,7 +431,10 @@ class SetToActiveBone(Operator):
     def poll(cls, context):
         if not context.active_pose_bone:
             return False
-
+        if not context.object:
+            return False
+        if context.object.type != 'ARMATURE':
+            return False
         return True
 
     def execute(self, context):
@@ -439,25 +442,54 @@ class SetToActiveBone(Operator):
             return {'FINISHED'}
 
         skeleton = context.object.data.expykit_retarget
+        active_bone_name = context.active_pose_bone.name
 
         if not self.slot_name:
             if self.attr_name == 'root':
-                setattr(skeleton, 'root', context.active_pose_bone.name)
+                setattr(skeleton, 'root', active_bone_name)
+                self.report({'INFO'}, f"Set root bone to '{active_bone_name}'")
             
             return {'FINISHED'}
 
         try:
             rig_grp = getattr(skeleton, self.attr_name)
         except AttributeError:
-            # TODO: warning
+            self.report({'WARNING'}, f"Could not find attribute '{self.attr_name}'")
             return {'FINISHED'}
         else:
             if self.sub_attr_name:
                 rig_grp = getattr(rig_grp, self.sub_attr_name)
                 
-            setattr(rig_grp, self.slot_name, context.active_pose_bone.name)
+            setattr(rig_grp, self.slot_name, active_bone_name)
+            self.report({'INFO'}, f"Set {self.slot_name} to '{active_bone_name}'")
 
         return {'FINISHED'}
+
+
+class SetToActiveBoneHelpText(bpy.types.Operator):
+    """Show information about the Set to Active Bone functionality"""
+    bl_idname = "object.expy_kit_active_bone_help"
+    bl_label = "Set to Active Bone Help"
+    
+    def execute(self, context):
+        self.report({'INFO'}, "Select a bone in pose mode, then click the eyedropper buttons next to bone fields to assign it")
+        return {'FINISHED'}
+    
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self, width=400)
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        col = box.column()
+        col.label(text="How to use 'Set to Active Bone':", icon='INFO')
+        col.separator()
+        col.label(text="1. Select an armature and go to Pose Mode")
+        col.label(text="2. Select/activate the bone you want to assign")
+        col.label(text="3. Click the eyedropper button next to any bone field")
+        col.label(text="4. The active bone will be assigned to that field")
+        col.separator()
+        col.label(text="Look for the eyedropper icons throughout the interface!")
 
 
 class MirrorSettings(Operator):
@@ -649,10 +681,10 @@ class RetargetBasePanel:
                 row.label(text=side.title())
 
             for k in bone_names:
-                bsplit = col.split(factor=0.85)
+                bsplit = col.split(factor=0.80)
                 bsplit.prop_search(group, k, ob.data, "bones", text="")
 
-                props = bsplit.operator(SetToActiveBone.bl_idname, text="<-")
+                props = bsplit.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
                 props.attr_name = attr_name
                 props.slot_name = k
 
@@ -666,6 +698,11 @@ class VIEW3D_PT_expy_retarget(RetargetBasePanel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+
+        # Add help button for active bone functionality
+        row = layout.row()
+        row.operator(SetToActiveBoneHelpText.bl_idname, text="How to Set Active Bone", icon='HELP')
+        layout.separator()
 
         split = layout.split(factor=0.75)
         split.menu(VIEW3D_MT_retarget_presets.__name__, text=VIEW3D_MT_retarget_presets.bl_label)
@@ -684,9 +721,9 @@ class VIEW3D_PT_expy_retarget_face(RetargetBasePanel, bpy.types.Panel):
 
         skeleton = ob.data.expykit_retarget
 
-        bsplit = layout.split(factor=0.85)
+        bsplit = layout.split(factor=0.80)
         bsplit.prop_search(skeleton.face, "jaw", ob.data, "bones", text="Jaw")
-        props = bsplit.operator(SetToActiveBone.bl_idname, text="<-")
+        props = bsplit.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         props.attr_name = 'face'
         props.slot_name = 'jaw'
 
@@ -694,17 +731,17 @@ class VIEW3D_PT_expy_retarget_face(RetargetBasePanel, bpy.types.Panel):
         col = split.column()
         col.label(text="Right")
 
-        bsplit = col.split(factor=0.85)
+        bsplit = col.split(factor=0.80)
         col = bsplit.column()
         col.prop_search(skeleton.face, "right_eye", ob.data, "bones", text="")
         col.prop_search(skeleton.face, "right_upLid", ob.data, "bones", text="")
 
         col = bsplit.column()
-        eye_props = col.operator(SetToActiveBone.bl_idname, text="<-")
+        eye_props = col.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         eye_props.attr_name = 'face'
         eye_props.slot_name = 'right_eye'
 
-        eye_props = col.operator(SetToActiveBone.bl_idname, text="<-")
+        eye_props = col.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         eye_props.attr_name = 'face'
         eye_props.slot_name = 'right_upLid'
 
@@ -716,17 +753,17 @@ class VIEW3D_PT_expy_retarget_face(RetargetBasePanel, bpy.types.Panel):
         col = split.column()
         col.label(text="Left")
 
-        bsplit = col.split(factor=0.85)
+        bsplit = col.split(factor=0.80)
         col = bsplit.column()
         col.prop_search(skeleton.face, "left_eye", ob.data, "bones", text="")
         col.prop_search(skeleton.face, "left_upLid", ob.data, "bones", text="")
 
         col = bsplit.column()
-        eye_props = col.operator(SetToActiveBone.bl_idname, text="<-")
+        eye_props = col.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         eye_props.attr_name = 'face'
         eye_props.slot_name = 'left_eye'
 
-        eye_props = col.operator(SetToActiveBone.bl_idname, text="<-")
+        eye_props = col.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         eye_props.attr_name = 'face'
         eye_props.slot_name = 'left_upLid'
 
@@ -760,10 +797,10 @@ class VIEW3D_PT_expy_retarget_fingers(RetargetBasePanel, bpy.types.Panel):
                 row.label(text=" ".join((side, k)).title())
                 finger = getattr(group, k)
                 for slot in finger_bones:
-                    bsplit = col.split(factor=0.85)
+                    bsplit = col.split(factor=0.80)
                     bsplit.prop_search(finger, slot, ob.data, "bones", text="")
                     
-                    f_props = bsplit.operator(SetToActiveBone.bl_idname, text="<-")
+                    f_props = bsplit.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
                     f_props.attr_name = '_'.join([side, group.name])
                     f_props.sub_attr_name = k
                     f_props.slot_name = slot
@@ -819,9 +856,9 @@ class VIEW3D_PT_expy_retarget_spine(RetargetBasePanel, bpy.types.Panel):
         skeleton = ob.data.expykit_retarget
 
         for slot in ('head', 'neck', 'spine2', 'spine1', 'spine', 'hips'):
-            split = layout.split(factor=0.85)
+            split = layout.split(factor=0.80)
             split.prop_search(skeleton.spine, slot, ob.data, "bones", text="Chest" if slot == 'spine2' else slot.title())
-            props = split.operator(SetToActiveBone.bl_idname, text="<-")
+            props = split.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
             props.attr_name = 'spine'
             props.slot_name = slot
 
@@ -867,9 +904,9 @@ class VIEW3D_PT_expy_retarget_root(RetargetBasePanel, bpy.types.Panel):
 
         skeleton = ob.data.expykit_retarget
 
-        split = layout.split(factor=0.85)
+        split = layout.split(factor=0.80)
         split.prop_search(skeleton, 'root', ob.data, "bones", text="Root")
-        s_props = split.operator(SetToActiveBone.bl_idname, text="<-")
+        s_props = split.operator(SetToActiveBone.bl_idname, text="", icon='EYEDROPPER')
         s_props.attr_name = 'root'
         s_props.sub_attr_name = ''
 
@@ -984,6 +1021,7 @@ def register_classes():
     bpy.utils.register_class(ExecutePresetArmatureRetarget)
     bpy.utils.register_class(ClearArmatureRetarget)
     bpy.utils.register_class(SetToActiveBone)
+    bpy.utils.register_class(SetToActiveBoneHelpText)
     bpy.utils.register_class(MirrorSettings)
 
     bpy.utils.register_class(AddCustomBone)
@@ -1070,6 +1108,7 @@ def unregister_classes():
 
     bpy.utils.unregister_class(MirrorSettings)
     bpy.utils.unregister_class(SetToActiveBone)
+    bpy.utils.unregister_class(SetToActiveBoneHelpText)
     bpy.utils.unregister_class(ClearArmatureRetarget)
     bpy.utils.unregister_class(ExecutePresetArmatureRetarget)
     bpy.utils.unregister_class(AddPresetArmatureRetarget)
